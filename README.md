@@ -121,6 +121,36 @@ JWT_SECRET=seu_jwt_secret
 
 ---
 
+## Possibilidades futuras
+
+As funcionalidades abaixo foram identificadas como evoluções desejáveis para versões pós-MVP, mas estão **fora do escopo do TCC** por exigirem credenciamentos, certificações ou integrações institucionais que inviabilizam sua implementação no contexto acadêmico atual.
+
+### Integração com RNDS / HL7 FHIR
+
+A **Rede Nacional de Dados em Saúde (RNDS)** do Ministério da Saúde expõe uma API baseada no padrão internacional **HL7 FHIR R4**, que permitiria ao vacFamily consultar e registrar doses diretamente no prontuário eletrônico nacional do cidadão. A integração exige certificado digital ICP-Brasil e-CNPJ e credenciamento formal junto ao DATASUS, sendo inviável no contexto acadêmico do TCC.
+
+### Importação automática via CadSUS
+
+O **CadSUS** (Cadastro Nacional de Usuários do SUS) centraliza o histórico de vacinações registradas em postos públicos de saúde. Uma integração futura poderia importar automaticamente esse histórico ao vincular o CPF do usuário, eliminando o preenchimento manual de doses já aplicadas. Depende de credenciamento no DATASUS e convênio com a SCTIE/MS.
+
+### Autenticação via gov.br
+
+O login federado via **gov.br** permitiria que o usuário acesse o vacFamily com a mesma identidade digital utilizada em serviços públicos federais, aumentando a confiança e eliminando o cadastro manual. A integração requer registro como Serviço Público Digital (SPD) junto à Secretaria de Governo Digital (SGD/MGI), processo aplicável apenas a serviços públicos ou parceiros credenciados.
+
+### Notivisa / VigiMed — Registro de ESAVI
+
+O **Notivisa** (ANVISA) e o **VigiMed** são os canais oficiais de farmacovigilância para registro de **Eventos Supostamente Atribuíveis à Vacinação ou Imunização (ESAVI)**. Uma versão futura poderia oferecer ao usuário a opção de relatar reações adversas diretamente a partir do registro de dose no aplicativo, com redirecionamento ou pré-preenchimento dos formulários oficiais.
+
+### Biometria no acesso diário
+
+Autenticação biométrica (impressão digital ou reconhecimento facial) para desbloquear o aplicativo sem reinserir senha, especialmente útil para uso frequente por cuidadores. Requer APIs nativas do sistema operacional, não disponíveis em PWA sem wrapper nativo (ex: Capacitor ou React Native).
+
+### Push Notifications nativas
+
+Envio de lembretes de vacinação via notificações push mesmo com o aplicativo fechado, utilizando serviços como **Firebase Cloud Messaging (FCM)**. No contexto atual, os lembretes funcionam apenas dentro do aplicativo. A implementação via Web Push API é tecnicamente possível em PWA, mas exige um servidor de push dedicado e gerenciamento de chaves VAPID, o que será avaliado em uma versão futura.
+
+---
+
 ## Autores
 
 - **Lucas Érico Quaresma Nunes**
