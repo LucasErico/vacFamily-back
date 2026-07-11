@@ -4,6 +4,10 @@ import helmet from '@fastify/helmet'
 import rateLimit from '@fastify/rate-limit'
 import { supabase } from './lib/supabase'
 import { authRoutes } from './routes/auth'
+import { membrosRoutes } from './routes/membros'
+import { vacinasRoutes } from './routes/vacinas'
+import { registrosRoutes } from './routes/registros'
+import { lembretesRoutes } from './routes/lembretes'
 
 async function bootstrap() {
   const app = Fastify({ logger: true })
@@ -61,13 +65,11 @@ async function bootstrap() {
   })
 
   // ── Rotas de negócio ─────────────────────────────────────
-  await app.register(authRoutes, { prefix: '/auth' })
-  // await app.register(membrosRoutes, { prefix: '/membros' })
-  // await app.register(vacinasRoutes, { prefix: '/vacinas' })
-  // await app.register(registrosRoutes, { prefix: '/registros' })
-  // await app.register(lembretesRoutes, { prefix: '/lembretes' })
-  // await app.register(syncRoutes, { prefix: '/sync' })
-  // await app.register(assistenteRoutes, { prefix: '/assistente' })
+  await app.register(authRoutes,      { prefix: '/auth' })
+  await app.register(membrosRoutes,   { prefix: '/membros' })
+  await app.register(vacinasRoutes,   { prefix: '/vacinas' })
+  await app.register(registrosRoutes, { prefix: '/registros' })
+  await app.register(lembretesRoutes, { prefix: '/lembretes' })
 
   // ── Start ───────────────────────────────────────────
   const PORT = Number(process.env.PORT ?? 3000)
