@@ -6,15 +6,25 @@ import { User } from '@supabase/supabase-js'
 
 // ── Schemas ───────────────────────────────────────────────────
 const criarRegistroSchema = z.object({
-  vacina_id: z.string().uuid('ID de vacina inválido'),
+  // vacina_id pode ser um UUID (vacinas de ciclo) ou a string literal 'avulsa'
+  vacina_id: z.union([
+    z.string().uuid('ID de vacina inválido'),
+    z.literal('avulsa'),
+  ]),
   numero_dose: z.number().int().min(0),
   data_aplicacao: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data inválida (use YYYY-MM-DD)'),
+  // local_aplicacao é opcional: não exigido para avulsas pendentes (futuras)
   local_aplicacao: z.string().max(200).optional(),
   fabricante: z.string().max(100).optional(),
   lote: z.string().max(50).optional(),
   dose_zero: z.boolean().default(false),
   comprovante_url: z.string().url().optional(),
   observacoes: z.string().max(1000).optional(),
+  // status_avulsa: usado exclusivamente para vacinas avulsas
+  //   'pendente'  → data futura, ainda não tomada
+  //   'concluida' → usuário marcou como tomada (data pode ter sido atualizada)
+  // 'atrasada' é calculado em runtime (data_aplicacao passada + status ainda pendente)
+  status_avulsa: z.enum(['pendente', 'concluida']).optional(),
 })
 
 const atualizarRegistroSchema = criarRegistroSchema.partial()
@@ -62,8 +72,13 @@ export async function registrosRoutes(app: FastifyInstance) {
 
   /**
    * POST /registros/membro/:membroId
-   * Registra uma vacina aplicada em um membro.
-   * Regra de negócio: data_aplicacao < hoje → Histórico; >= hoje → Calendário (lembrete).
+   * Registra uma dose vacinal em um membro.
+   *
+   * REGRA DE NEGÓCIO — VACINAS AVULSAS:
+   *   data_aplicacao < hoje  → Registro imediato no histórico (já tomada). local_aplicacao obrigatório.
+   *   data_aplicacao >= hoje → Registro pendente (ainda não tomada). local_aplicacao opcional.
+   *                            status_avulsa deve ser enviado como 'pendente'.
+   *
    * O campo membro_familiar_id é injetado pelo back via path param — não deve vir no body.
    */
   app.post('/membro/:membroId', { preHandler: authenticate }, async (request, reply) => {
@@ -82,9 +97,20 @@ export async function registrosRoutes(app: FastifyInstance) {
       })
     }
 
+    const body = result.data
+
+    // Validação extra: avulsa com data passada exige local_aplicacao
+    const hoje = new Date().toISOString().slice(0, 10)
+    if (body.vacina_id === 'avulsa' && body.data_aplicacao < hoje && !body.local_aplicacao?.trim()) {
+      return reply.status(400).send({
+        status: 'error',
+        errors: { local_aplicacao: ['Local de aplicação é obrigatório para registros de doses já tomadas.'] },
+      })
+    }
+
     const { data, error } = await supabase
       .from('registro_vacinal')
-      .insert({ ...result.data, membro_familiar_id: membroId })
+      .insert({ ...body, membro_familiar_id: membroId })
       .select()
       .single()
 
@@ -123,7 +149,9 @@ export async function registrosRoutes(app: FastifyInstance) {
 
   /**
    * PUT /registros/:id
-   * Atualiza um registro vacinal
+   * Atualiza um registro vacinal.
+   * Usado para marcar avulsa pendente como concluída:
+   *   { status_avulsa: 'concluida', data_aplicacao: '<data real>', local_aplicacao: '<local>' }
    */
   app.put('/:id', { preHandler: authenticate }, async (request, reply) => {
     const { user } = request as typeof request & AuthRequest
@@ -209,8 +237,6 @@ export async function registrosRoutes(app: FastifyInstance) {
    *   - Retorna apenas doses cuja data esperada seja >= hoje.
    *   - NÃO calcula retroativamente vacinas "atrasadas" para doses
    *     que nunca foram registradas. Isso evita listas falsas de atraso.
-   *   - As regras (regraReforco, regraCoadministracao) são usadas para
-   *     validação e sugestão de datas FUTURAS, nunca para imputar histórico.
    */
   app.get('/membro/:membroId/proximas', { preHandler: authenticate }, async (request, reply) => {
     const { user } = request as typeof request & AuthRequest
@@ -264,10 +290,6 @@ export async function registrosRoutes(app: FastifyInstance) {
         const idadeOk = !v.idade_minima_dias || idadeDias >= v.idade_minima_dias
         if (!idadeOk) return false
 
-        // CORTE TEMPORAL: só inclui se a próxima dose esperada é >= hoje.
-        // Evita retroatividade: vacinas cujo prazo passou sem registro
-        // NÃO aparecem como pendentes/atrasadas automaticamente.
-        const proximaDoseNumero = dosesTomadas + 1
         const idadeDoseEsperadaDias = (v.idade_minima_dias ?? 0)
         const dataEsperada = new Date(nascimento)
         dataEsperada.setDate(dataEsperada.getDate() + idadeDoseEsperadaDias)
