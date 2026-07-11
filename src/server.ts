@@ -3,10 +3,12 @@ import cors from '@fastify/cors'
 import helmet from '@fastify/helmet'
 import rateLimit from '@fastify/rate-limit'
 import { supabase } from './lib/supabase'
+import { authRoutes } from './routes/auth'
 
 async function bootstrap() {
   const app = Fastify({ logger: true })
 
+  // ── Plugins de segurança ─────────────────────────────────
   await app.register(helmet)
 
   await app.register(cors, {
@@ -19,34 +21,28 @@ async function bootstrap() {
     timeWindow: '1 minute',
   })
 
+  // ── Health check ───────────────────────────────────────
   app.get('/health', async () => ({
     status: 'ok',
     project: 'vacFamily-back',
     timestamp: new Date().toISOString(),
   }))
 
+  // ── Health check banco ────────────────────────────────
   app.get('/health/db', async (_, reply) => {
     try {
-      // Tenta listar vacinas (tabela pública do projeto)
-      // Se a tabela ainda não existe, retorna erro específico mas confirma que a conexão funciona
-      const { data, error, status } = await supabase
+      const { data, error } = await supabase
         .from('vacina')
         .select('id, nome')
         .limit(3)
 
       if (error) {
-        // Código 42P01 = tabela não existe — conexão OK mas tabelas ainda não foram criadas
         const tableNotFound = error.code === '42P01'
         return reply.status(tableNotFound ? 200 : 500).send({
           status: tableNotFound ? 'ok' : 'error',
           database: 'connected',
-          warning: tableNotFound ? 'Tabela "vacina" ainda não existe — rode as migrations no Supabase' : undefined,
+          warning: tableNotFound ? 'Tabela "vacina" ainda nao existe — rode as migrations' : undefined,
           error: tableNotFound ? undefined : error.message,
-          error_code: tableNotFound ? undefined : error.code,
-          env_check: {
-            supabase_url: process.env.SUPABASE_URL ? 'set' : 'MISSING',
-            service_role_key: process.env.SUPABASE_SERVICE_ROLE_KEY ? 'set' : 'MISSING',
-          },
           timestamp: new Date().toISOString(),
         })
       }
@@ -60,23 +56,20 @@ async function bootstrap() {
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err)
-      return reply.status(500).send({
-        status: 'error',
-        message,
-        timestamp: new Date().toISOString(),
-      })
+      return reply.status(500).send({ status: 'error', message, timestamp: new Date().toISOString() })
     }
   })
 
-  // ── Rotas (registrar conforme desenvolvimento) ─────────────
-  // await app.register(import('./routes/auth'), { prefix: '/auth' })
-  // await app.register(import('./routes/membros'), { prefix: '/membros' })
-  // await app.register(import('./routes/vacinas'), { prefix: '/vacinas' })
-  // await app.register(import('./routes/registros'), { prefix: '/registros' })
-  // await app.register(import('./routes/lembretes'), { prefix: '/lembretes' })
-  // await app.register(import('./routes/sync'), { prefix: '/sync' })
-  // await app.register(import('./routes/assistente'), { prefix: '/assistente' })
+  // ── Rotas de negócio ─────────────────────────────────────
+  await app.register(authRoutes, { prefix: '/auth' })
+  // await app.register(membrosRoutes, { prefix: '/membros' })
+  // await app.register(vacinasRoutes, { prefix: '/vacinas' })
+  // await app.register(registrosRoutes, { prefix: '/registros' })
+  // await app.register(lembretesRoutes, { prefix: '/lembretes' })
+  // await app.register(syncRoutes, { prefix: '/sync' })
+  // await app.register(assistenteRoutes, { prefix: '/assistente' })
 
+  // ── Start ───────────────────────────────────────────
   const PORT = Number(process.env.PORT ?? 3000)
   await app.listen({ port: PORT, host: '0.0.0.0' })
   console.log(`\nvacFamily-back rodando na porta ${PORT} \u2714`)
