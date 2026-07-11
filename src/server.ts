@@ -7,7 +7,6 @@ import { supabase } from './lib/supabase'
 async function bootstrap() {
   const app = Fastify({ logger: true })
 
-  // ── Plugins de segurança ─────────────────────────────────
   await app.register(helmet)
 
   await app.register(cors, {
@@ -20,23 +19,30 @@ async function bootstrap() {
     timeWindow: '1 minute',
   })
 
-  // ── Health check ───────────────────────────────────────
   app.get('/health', async () => ({
     status: 'ok',
     project: 'vacFamily-back',
     timestamp: new Date().toISOString(),
   }))
 
-  // ── Health check banco (rpc now()) ────────────────────
   app.get('/health/db', async (_, reply) => {
     try {
-      // Chama a função now() do PostgreSQL via RPC — mínimo privilégio necessário
-      const { data, error } = await supabase.rpc('now')
+      // Tenta listar vacinas (tabela pública do projeto)
+      // Se a tabela ainda não existe, retorna erro específico mas confirma que a conexão funciona
+      const { data, error, status } = await supabase
+        .from('vacina')
+        .select('id, nome')
+        .limit(3)
 
       if (error) {
-        return reply.status(500).send({
-          status: 'error',
-          detail: error,
+        // Código 42P01 = tabela não existe — conexão OK mas tabelas ainda não foram criadas
+        const tableNotFound = error.code === '42P01'
+        return reply.status(tableNotFound ? 200 : 500).send({
+          status: tableNotFound ? 'ok' : 'error',
+          database: 'connected',
+          warning: tableNotFound ? 'Tabela "vacina" ainda não existe — rode as migrations no Supabase' : undefined,
+          error: tableNotFound ? undefined : error.message,
+          error_code: tableNotFound ? undefined : error.code,
           env_check: {
             supabase_url: process.env.SUPABASE_URL ? 'set' : 'MISSING',
             service_role_key: process.env.SUPABASE_SERVICE_ROLE_KEY ? 'set' : 'MISSING',
@@ -48,8 +54,8 @@ async function bootstrap() {
       return {
         status: 'ok',
         database: 'connected',
-        db_time: data,
-        supabase_url: process.env.SUPABASE_URL,
+        vacinas_encontradas: data?.length ?? 0,
+        amostra: data,
         timestamp: new Date().toISOString(),
       }
     } catch (err: unknown) {
@@ -71,7 +77,6 @@ async function bootstrap() {
   // await app.register(import('./routes/sync'), { prefix: '/sync' })
   // await app.register(import('./routes/assistente'), { prefix: '/assistente' })
 
-  // ── Start ───────────────────────────────────────────
   const PORT = Number(process.env.PORT ?? 3000)
   await app.listen({ port: PORT, host: '0.0.0.0' })
   console.log(`\nvacFamily-back rodando na porta ${PORT} \u2714`)
