@@ -6,26 +6,15 @@ import { User } from '@supabase/supabase-js'
 
 // ── Schemas ───────────────────────────────────────────────────
 const criarRegistroSchema = z.object({
-  // vacina_id pode ser um UUID (vacinas de ciclo) ou a string literal 'avulsa'
-  // Internamente, 'avulsa' é convertido para null antes de inserir no banco
-  vacina_id: z.union([
-    z.string().uuid('ID de vacina inválido'),
-    z.literal('avulsa'),
-  ]),
+  vacina_id: z.string().uuid('ID de vacina inválido'),
   numero_dose: z.number().int().min(0),
   data_aplicacao: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data inválida (use YYYY-MM-DD)'),
-  // local_aplicacao é opcional: não exigido para avulsas pendentes (futuras)
   local_aplicacao: z.string().max(200).optional(),
   fabricante: z.string().max(100).optional(),
   lote: z.string().max(50).optional(),
   dose_zero: z.boolean().default(false),
   comprovante_url: z.string().url().optional(),
   observacoes: z.string().max(1000).optional(),
-  // status_avulsa: usado exclusivamente para vacinas avulsas
-  //   'pendente'  → data futura, ainda não tomada
-  //   'concluida' → usuário marcou como tomada (data pode ter sido atualizada)
-  // 'atrasada' é calculado em runtime (data_aplicacao passada + status ainda pendente)
-  status_avulsa: z.enum(['pendente', 'concluida']).optional(),
 })
 
 const atualizarRegistroSchema = criarRegistroSchema.partial()
@@ -41,13 +30,6 @@ async function membroDoUsuario(membroId: string, userId: string): Promise<boolea
     .eq('usuario_id', userId)
     .single()
   return !!data
-}
-
-// ── Helper: normaliza vacina_id para o banco ──────────────────
-// O banco espera uuid | null. A string 'avulsa' é apenas um sentinel
-// do front que indica "sem vínculo com o calendário oficial".
-function normalizarVacinaId(vacina_id: string): string | null {
-  return vacina_id === 'avulsa' ? null : vacina_id
 }
 
 // ── Rotas ─────────────────────────────────────────────────────
@@ -69,31 +51,20 @@ export async function registrosRoutes(app: FastifyInstance) {
       .from('registro_vacinal')
       .select('*, vacina(id, nome, nome_completo, doses_total)')
       .eq('membro_familiar_id', membroId)
+      .not('vacina_id', 'is', null)
       .order('data_aplicacao', { ascending: false })
 
     if (error) {
       return reply.status(500).send({ status: 'error', message: error.message })
     }
 
-    // Normaliza vacina_id=null → 'avulsa' na resposta para manter compatibilidade com o front
-    const registros = (data ?? []).map(r => ({
-      ...r,
-      vacina_id: r.vacina_id ?? 'avulsa',
-    }))
-
-    return { status: 'ok', registros }
+    return { status: 'ok', registros: data ?? [] }
   })
 
   /**
    * POST /registros/membro/:membroId
    * Registra uma dose vacinal em um membro.
-   *
-   * REGRA DE NEGÓCIO — VACINAS AVULSAS:
-   *   data_aplicacao < hoje  → Registro imediato no histórico (já tomada). local_aplicacao obrigatório.
-   *   data_aplicacao >= hoje → Registro pendente (ainda não tomada). local_aplicacao opcional.
-   *                            status_avulsa deve ser enviado como 'pendente'.
-   *
-   * O campo membro_familiar_id é injetado pelo back via path param — não deve vir no body.
+   * Só aceita vacinas do catálogo oficial (vacina_id UUID obrigatório).
    */
   app.post('/membro/:membroId', { preHandler: authenticate }, async (request, reply) => {
     const { user } = request as typeof request & AuthRequest
@@ -113,20 +84,10 @@ export async function registrosRoutes(app: FastifyInstance) {
 
     const body = result.data
 
-    // Validação extra: avulsa com data passada exige local_aplicacao
-    const hoje = new Date().toISOString().slice(0, 10)
-    if (body.vacina_id === 'avulsa' && body.data_aplicacao < hoje && !body.local_aplicacao?.trim()) {
-      return reply.status(400).send({
-        status: 'error',
-        errors: { local_aplicacao: ['Local de aplicação é obrigatório para registros de doses já tomadas.'] },
-      })
-    }
-
     const { data, error } = await supabase
       .from('registro_vacinal')
       .insert({
         ...body,
-        vacina_id: normalizarVacinaId(body.vacina_id),
         membro_familiar_id: membroId,
       })
       .select()
@@ -136,11 +97,7 @@ export async function registrosRoutes(app: FastifyInstance) {
       return reply.status(500).send({ status: 'error', message: error.message })
     }
 
-    // Normaliza vacina_id=null → 'avulsa' na resposta para manter compatibilidade com o front
-    return reply.status(201).send({
-      status: 'ok',
-      registro: { ...data, vacina_id: data.vacina_id ?? 'avulsa' },
-    })
+    return reply.status(201).send({ status: 'ok', registro: data })
   })
 
   /**
@@ -166,14 +123,12 @@ export async function registrosRoutes(app: FastifyInstance) {
       return reply.status(403).send({ status: 'error', message: 'Acesso negado' })
     }
 
-    return { status: 'ok', registro: { ...data, vacina_id: data.vacina_id ?? 'avulsa' } }
+    return { status: 'ok', registro: data }
   })
 
   /**
    * PUT /registros/:id
    * Atualiza um registro vacinal.
-   * Usado para marcar avulsa pendente como concluída:
-   *   { status_avulsa: 'concluida', data_aplicacao: '<data real>', local_aplicacao: '<local>' }
    */
   app.put('/:id', { preHandler: authenticate }, async (request, reply) => {
     const { user } = request as typeof request & AuthRequest
@@ -202,14 +157,9 @@ export async function registrosRoutes(app: FastifyInstance) {
       })
     }
 
-    const updateData = { ...result.data, updated_at: new Date().toISOString() }
-    if (updateData.vacina_id !== undefined) {
-      updateData.vacina_id = normalizarVacinaId(updateData.vacina_id) as typeof updateData.vacina_id
-    }
-
     const { data, error } = await supabase
       .from('registro_vacinal')
-      .update(updateData)
+      .update({ ...result.data, updated_at: new Date().toISOString() })
       .eq('id', id)
       .select()
       .single()
@@ -218,7 +168,7 @@ export async function registrosRoutes(app: FastifyInstance) {
       return reply.status(500).send({ status: 'error', message: error.message })
     }
 
-    return { status: 'ok', registro: { ...data, vacina_id: data.vacina_id ?? 'avulsa' } }
+    return { status: 'ok', registro: data }
   })
 
   /**
@@ -258,12 +208,7 @@ export async function registrosRoutes(app: FastifyInstance) {
 
   /**
    * GET /registros/membro/:membroId/proximas
-   * Retorna vacinas FUTURAS pendentes para um membro.
-   *
-   * REGRA DE NEGÓCIO:
-   *   - Retorna apenas doses cuja data esperada seja >= hoje.
-   *   - NÃO calcula retroativamente vacinas "atrasadas" para doses
-   *     que nunca foram registradas. Isso evita listas falsas de atraso.
+   * Retorna vacinas futuras pendentes para um membro.
    */
   app.get('/membro/:membroId/proximas', { preHandler: authenticate }, async (request, reply) => {
     const { user } = request as typeof request & AuthRequest
