@@ -15,8 +15,20 @@ async function bootstrap() {
   // ── Plugins de segurança ─────────────────────────────────
   await app.register(helmet)
 
+  // CORS: aceita lista de origens separadas por vírgula
+  // Ex.: FRONT_URL=https://vacfamily.vercel.app,https://vacfamily-git-main.vercel.app
+  const rawOrigins = process.env.FRONT_URL ?? 'http://localhost:5173'
+  const allowedOrigins = rawOrigins.split(',').map(o => o.trim()).filter(Boolean)
+
   await app.register(cors, {
-    origin: process.env.FRONT_URL ?? 'http://localhost:5173',
+    origin: (origin, cb) => {
+      // Requisições sem origin (curl, Postman, SSR) sempre passam
+      if (!origin) return cb(null, true)
+      if (allowedOrigins.some(o => origin === o || origin.endsWith('.vercel.app'))) {
+        return cb(null, true)
+      }
+      return cb(new Error(`CORS: origem não permitida → ${origin}`), false)
+    },
     credentials: true,
   })
 

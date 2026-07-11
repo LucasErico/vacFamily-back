@@ -27,7 +27,9 @@ export async function authRoutes(app: FastifyInstance) {
 
   /**
    * POST /auth/register
-   * Cadastra novo usuario via Supabase Auth
+   * Cadastra novo usuario via Supabase Auth e retorna sessão imediata.
+   * Usa admin.createUser com email_confirm:true para dispensar verificação,
+   * depois faz signInWithPassword para obter o access_token.
    */
   app.post('/register', async (request, reply) => {
     const result = registerSchema.safeParse(request.body)
@@ -40,16 +42,16 @@ export async function authRoutes(app: FastifyInstance) {
 
     const { nome, email, senha } = result.data
 
-    const { data, error } = await supabase.auth.admin.createUser({
+    // 1. Cria usuário com email já confirmado
+    const { data: created, error: createError } = await supabase.auth.admin.createUser({
       email,
       password: senha,
-      email_confirm: true, // confirma email automaticamente (sem precisar de verificacao)
+      email_confirm: true,
       user_metadata: { nome },
     })
 
-    if (error) {
-      // Email ja cadastrado
-      if (error.message.includes('already registered')) {
+    if (createError) {
+      if (createError.message.includes('already registered')) {
         return reply.status(409).send({
           status: 'error',
           message: 'Email ja cadastrado',
@@ -57,17 +59,49 @@ export async function authRoutes(app: FastifyInstance) {
       }
       return reply.status(500).send({
         status: 'error',
-        message: error.message,
+        message: createError.message,
+      })
+    }
+
+    // 2. Faz login imediato para obter o JWT da sessão
+    const { createClient } = await import('@supabase/supabase-js')
+    const supabaseAuth = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_ANON_KEY!,
+      { auth: { autoRefreshToken: false, persistSession: false } }
+    )
+
+    const { data: session, error: loginError } = await supabaseAuth.auth.signInWithPassword({
+      email,
+      password: senha,
+    })
+
+    if (loginError || !session?.session) {
+      // Usuário criado mas login falhou — retorna sem token (frontend trata)
+      return reply.status(201).send({
+        status: 'ok',
+        requiresVerification: false,
+        message: 'Usuario cadastrado. Faça login para continuar.',
+        usuario: {
+          id: created.user.id,
+          email: created.user.email,
+          nome,
+          created_at: created.user.created_at,
+        },
       })
     }
 
     return reply.status(201).send({
       status: 'ok',
-      message: 'Usuario cadastrado com sucesso',
+      access_token: session.session.access_token,
+      refresh_token: session.session.refresh_token,
+      expires_in: session.session.expires_in,
+      requiresVerification: false,
       usuario: {
-        id: data.user.id,
-        email: data.user.email,
-        nome,
+        id: session.user.id,
+        email: session.user.email,
+        nome: session.user.user_metadata?.nome ?? nome,
+        created_at: session.user.created_at,
       },
     })
   })
@@ -87,7 +121,6 @@ export async function authRoutes(app: FastifyInstance) {
 
     const { email, senha } = result.data
 
-    // Usa anon key para login do usuario
     const { createClient } = await import('@supabase/supabase-js')
     const supabaseAuth = createClient(
       process.env.SUPABASE_URL!,
@@ -116,6 +149,7 @@ export async function authRoutes(app: FastifyInstance) {
         id: data.user.id,
         email: data.user.email,
         nome: data.user.user_metadata?.nome ?? '',
+        created_at: data.user.created_at,
       },
     }
   })
@@ -160,7 +194,7 @@ export async function authRoutes(app: FastifyInstance) {
     }
 
     const { email } = result.data
-    const frontUrl = process.env.FRONT_URL ?? 'http://localhost:5173'
+    const frontUrl = process.env.FRONT_URL?.split(',')[0].trim() ?? 'http://localhost:5173'
 
     const { createClient } = await import('@supabase/supabase-js')
     const supabaseAuth = createClient(
@@ -180,7 +214,6 @@ export async function authRoutes(app: FastifyInstance) {
       })
     }
 
-    // Sempre retorna sucesso para nao revelar se o email existe
     return {
       status: 'ok',
       message: 'Se o email estiver cadastrado, voce recebera as instrucoes de recuperacao',
