@@ -27,16 +27,20 @@ async function bootstrap() {
     timestamp: new Date().toISOString(),
   }))
 
-  // ── Health check banco ────────────────────────────────
+  // ── Health check banco (rpc now()) ────────────────────
   app.get('/health/db', async (_, reply) => {
     try {
-      // Testa conexão listando usuários do auth (service_role tem acesso)
-      const { data, error } = await supabase.auth.admin.listUsers({ perPage: 1 })
+      // Chama a função now() do PostgreSQL via RPC — mínimo privilégio necessário
+      const { data, error } = await supabase.rpc('now')
 
       if (error) {
         return reply.status(500).send({
           status: 'error',
-          message: error.message,
+          detail: error,
+          env_check: {
+            supabase_url: process.env.SUPABASE_URL ? 'set' : 'MISSING',
+            service_role_key: process.env.SUPABASE_SERVICE_ROLE_KEY ? 'set' : 'MISSING',
+          },
           timestamp: new Date().toISOString(),
         })
       }
@@ -44,12 +48,12 @@ async function bootstrap() {
       return {
         status: 'ok',
         database: 'connected',
+        db_time: data,
         supabase_url: process.env.SUPABASE_URL,
-        auth_users_found: data.users.length,
         timestamp: new Date().toISOString(),
       }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Erro desconhecido'
+      const message = err instanceof Error ? err.message : String(err)
       return reply.status(500).send({
         status: 'error',
         message,
