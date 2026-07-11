@@ -2,11 +2,12 @@
   "name": "vacfamily-back",
   "version": "1.0.0",
   "description": "Back-end da aplicação VacFamily — TCC FAETERJ 2026",
-  "main": "dist/server.js",
+  "main": "src/server.ts",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc",
-    "start": "node dist/server.js",
+    "build": "echo 'No build step needed (tsx runtime)'",
+    "start": "node --import tsx/esm src/server.ts",
+    "start:tsx": "tsx src/server.ts",
     "lint": "eslint src --ext .ts"
   },
   "dependencies": {
@@ -18,13 +19,13 @@
     "bcrypt": "^5.1.1",
     "fastify": "^4.28.1",
     "nodemailer": "^6.9.13",
+    "tsx": "^4.15.6",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",
     "@types/node": "^20.14.2",
     "@types/nodemailer": "^6.4.15",
-    "tsx": "^4.15.6",
     "typescript": "^5.4.5"
   },
   "engines": {

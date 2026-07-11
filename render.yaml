@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: vacfamily-back
+    runtime: node
+    region: ohio
+    plan: free
+    branch: main
+    buildCommand: npm install
+    startCommand: npx tsx src/server.ts
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: FRONT_URL
+        value: https://vac-family.vercel.app
+      - key: SUPABASE_URL
+        value: https://kffcdtmgylzfllqhsikq.supabase.co
+      - key: SUPABASE_JWKS_URL
+        value: https://kffcdtmgylzfllqhsikq.supabase.co/auth/v1/.well-known/jwks.json
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      - key: BCRYPT_SALT_ROUNDS
+        value: 10
