@@ -62,7 +62,9 @@ export async function registrosRoutes(app: FastifyInstance) {
 
   /**
    * POST /registros/membro/:membroId
-   * Registra uma vacina aplicada em um membro
+   * Registra uma vacina aplicada em um membro.
+   * Regra de negócio: data_aplicacao < hoje → Histórico; >= hoje → Calendário (lembrete).
+   * O campo membro_familiar_id é injetado pelo back via path param — não deve vir no body.
    */
   app.post('/membro/:membroId', { preHandler: authenticate }, async (request, reply) => {
     const { user } = request as typeof request & AuthRequest
@@ -111,7 +113,6 @@ export async function registrosRoutes(app: FastifyInstance) {
       return reply.status(404).send({ status: 'error', message: 'Registro não encontrado' })
     }
 
-    // Verifica que o registro pertence ao usuario
     const membro = data.membro_familiar as { usuario_id: string }
     if (membro.usuario_id !== user.id) {
       return reply.status(403).send({ status: 'error', message: 'Acesso negado' })
@@ -128,7 +129,6 @@ export async function registrosRoutes(app: FastifyInstance) {
     const { user } = request as typeof request & AuthRequest
     const { id } = request.params as { id: string }
 
-    // Verifica posse
     const { data: existing } = await supabase
       .from('registro_vacinal')
       .select('id, membro_familiar!inner(usuario_id)')
@@ -203,8 +203,14 @@ export async function registrosRoutes(app: FastifyInstance) {
 
   /**
    * GET /registros/membro/:membroId/proximas
-   * Retorna vacinas pendentes/atrasadas para um membro
-   * baseado nas vacinas ja aplicadas vs calendario esperado
+   * Retorna vacinas FUTURAS pendentes para um membro.
+   *
+   * REGRA DE NEGÓCIO:
+   *   - Retorna apenas doses cuja data esperada seja >= hoje.
+   *   - NÃO calcula retroativamente vacinas "atrasadas" para doses
+   *     que nunca foram registradas. Isso evita listas falsas de atraso.
+   *   - As regras (regraReforco, regraCoadministracao) são usadas para
+   *     validação e sugestão de datas FUTURAS, nunca para imputar histórico.
    */
   app.get('/membro/:membroId/proximas', { preHandler: authenticate }, async (request, reply) => {
     const { user } = request as typeof request & AuthRequest
@@ -214,7 +220,6 @@ export async function registrosRoutes(app: FastifyInstance) {
       return reply.status(404).send({ status: 'error', message: 'Membro não encontrado' })
     }
 
-    // Busca dados do membro
     const { data: membro } = await supabase
       .from('membro_familiar')
       .select('data_nascimento, tipo_calendario')
@@ -225,13 +230,11 @@ export async function registrosRoutes(app: FastifyInstance) {
       return reply.status(404).send({ status: 'error', message: 'Membro não encontrado' })
     }
 
-    // Busca todas as vacinas aplicadas
     const { data: aplicadas } = await supabase
       .from('registro_vacinal')
       .select('vacina_id, numero_dose')
       .eq('membro_familiar_id', membroId)
 
-    // Busca vacinas do calendario do tipo do membro
     const { data: todasVacinas } = await supabase
       .from('vacina')
       .select('id, nome, nome_completo, doses_total, faixa_etaria, idade_minima_dias, obrigatoria')
@@ -242,7 +245,6 @@ export async function registrosRoutes(app: FastifyInstance) {
       return { status: 'ok', proximas: [] }
     }
 
-    // Calcula doses ja tomadas por vacina
     const dosesAplicadas = (aplicadas ?? []).reduce<Record<string, number[]>>((acc, r) => {
       if (!acc[r.vacina_id]) acc[r.vacina_id] = []
       acc[r.vacina_id].push(r.numero_dose)
@@ -250,14 +252,28 @@ export async function registrosRoutes(app: FastifyInstance) {
     }, {})
 
     const hoje = new Date()
+    hoje.setHours(0, 0, 0, 0)
     const nascimento = new Date(membro.data_nascimento)
-    const idadeDias = Math.floor((hoje.getTime() - nascimento.getTime()) / (1000 * 60 * 60 * 24))
+    const idadeDias = Math.floor((Date.now() - nascimento.getTime()) / (1000 * 60 * 60 * 24))
 
     const proximas = todasVacinas
       .filter(v => {
         const dosesTomadas = dosesAplicadas[v.id]?.length ?? 0
+        if (dosesTomadas >= v.doses_total) return false
+
         const idadeOk = !v.idade_minima_dias || idadeDias >= v.idade_minima_dias
-        return idadeOk && dosesTomadas < v.doses_total
+        if (!idadeOk) return false
+
+        // CORTE TEMPORAL: só inclui se a próxima dose esperada é >= hoje.
+        // Evita retroatividade: vacinas cujo prazo passou sem registro
+        // NÃO aparecem como pendentes/atrasadas automaticamente.
+        const proximaDoseNumero = dosesTomadas + 1
+        const idadeDoseEsperadaDias = (v.idade_minima_dias ?? 0)
+        const dataEsperada = new Date(nascimento)
+        dataEsperada.setDate(dataEsperada.getDate() + idadeDoseEsperadaDias)
+        dataEsperada.setHours(0, 0, 0, 0)
+
+        return dataEsperada >= hoje
       })
       .map(v => ({
         vacina_id: v.id,
