@@ -7,6 +7,7 @@ import { User } from '@supabase/supabase-js'
 // ── Schemas ───────────────────────────────────────────────────
 const criarRegistroSchema = z.object({
   // vacina_id pode ser um UUID (vacinas de ciclo) ou a string literal 'avulsa'
+  // Internamente, 'avulsa' é convertido para null antes de inserir no banco
   vacina_id: z.union([
     z.string().uuid('ID de vacina inválido'),
     z.literal('avulsa'),
@@ -42,6 +43,13 @@ async function membroDoUsuario(membroId: string, userId: string): Promise<boolea
   return !!data
 }
 
+// ── Helper: normaliza vacina_id para o banco ──────────────────
+// O banco espera uuid | null. A string 'avulsa' é apenas um sentinel
+// do front que indica "sem vínculo com o calendário oficial".
+function normalizarVacinaId(vacina_id: string): string | null {
+  return vacina_id === 'avulsa' ? null : vacina_id
+}
+
 // ── Rotas ─────────────────────────────────────────────────────
 export async function registrosRoutes(app: FastifyInstance) {
 
@@ -67,7 +75,13 @@ export async function registrosRoutes(app: FastifyInstance) {
       return reply.status(500).send({ status: 'error', message: error.message })
     }
 
-    return { status: 'ok', registros: data }
+    // Normaliza vacina_id=null → 'avulsa' na resposta para manter compatibilidade com o front
+    const registros = (data ?? []).map(r => ({
+      ...r,
+      vacina_id: r.vacina_id ?? 'avulsa',
+    }))
+
+    return { status: 'ok', registros }
   })
 
   /**
@@ -110,7 +124,11 @@ export async function registrosRoutes(app: FastifyInstance) {
 
     const { data, error } = await supabase
       .from('registro_vacinal')
-      .insert({ ...body, membro_familiar_id: membroId })
+      .insert({
+        ...body,
+        vacina_id: normalizarVacinaId(body.vacina_id),
+        membro_familiar_id: membroId,
+      })
       .select()
       .single()
 
@@ -118,7 +136,11 @@ export async function registrosRoutes(app: FastifyInstance) {
       return reply.status(500).send({ status: 'error', message: error.message })
     }
 
-    return reply.status(201).send({ status: 'ok', registro: data })
+    // Normaliza vacina_id=null → 'avulsa' na resposta para manter compatibilidade com o front
+    return reply.status(201).send({
+      status: 'ok',
+      registro: { ...data, vacina_id: data.vacina_id ?? 'avulsa' },
+    })
   })
 
   /**
@@ -144,7 +166,7 @@ export async function registrosRoutes(app: FastifyInstance) {
       return reply.status(403).send({ status: 'error', message: 'Acesso negado' })
     }
 
-    return { status: 'ok', registro: data }
+    return { status: 'ok', registro: { ...data, vacina_id: data.vacina_id ?? 'avulsa' } }
   })
 
   /**
@@ -180,9 +202,14 @@ export async function registrosRoutes(app: FastifyInstance) {
       })
     }
 
+    const updateData = { ...result.data, updated_at: new Date().toISOString() }
+    if (updateData.vacina_id !== undefined) {
+      updateData.vacina_id = normalizarVacinaId(updateData.vacina_id) as typeof updateData.vacina_id
+    }
+
     const { data, error } = await supabase
       .from('registro_vacinal')
-      .update({ ...result.data, updated_at: new Date().toISOString() })
+      .update(updateData)
       .eq('id', id)
       .select()
       .single()
@@ -191,7 +218,7 @@ export async function registrosRoutes(app: FastifyInstance) {
       return reply.status(500).send({ status: 'error', message: error.message })
     }
 
-    return { status: 'ok', registro: data }
+    return { status: 'ok', registro: { ...data, vacina_id: data.vacina_id ?? 'avulsa' } }
   })
 
   /**
@@ -260,6 +287,7 @@ export async function registrosRoutes(app: FastifyInstance) {
       .from('registro_vacinal')
       .select('vacina_id, numero_dose')
       .eq('membro_familiar_id', membroId)
+      .not('vacina_id', 'is', null)
 
     const { data: todasVacinas } = await supabase
       .from('vacina')
@@ -272,6 +300,7 @@ export async function registrosRoutes(app: FastifyInstance) {
     }
 
     const dosesAplicadas = (aplicadas ?? []).reduce<Record<string, number[]>>((acc, r) => {
+      if (!r.vacina_id) return acc
       if (!acc[r.vacina_id]) acc[r.vacina_id] = []
       acc[r.vacina_id].push(r.numero_dose)
       return acc
