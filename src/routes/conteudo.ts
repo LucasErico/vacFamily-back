@@ -1,23 +1,27 @@
-import { FastifyInstance } from 'fastify'
+import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { supabase } from '../lib/supabase'
 import { authenticate } from '../middlewares/authenticate'
 
 /**
  * Rotas de conteúdo (cards do carrossel do Dashboard).
  *
- * GET  /conteudo        — público: lista cards ativos (para o Dashboard)
- * GET  /conteudo/admin  — admin:   lista todos os cards (ativos + inativos)
- * POST /conteudo        — admin:   cria novo card
- * PUT  /conteudo/:id    — admin:   atualiza card existente
- * DELETE /conteudo/:id  — admin:   remove card
+ * GET    /conteudo        — público: cards ativos (Dashboard)
+ * GET    /conteudo/admin  — admin:   todos os cards
+ * POST   /conteudo        — admin:   cria card
+ * PUT    /conteudo/:id    — admin:   atualiza card
+ * DELETE /conteudo/:id    — admin:   remove card
  *
- * "Admin" aqui = usuário autenticado com role 'admin' no metadata do Supabase.
- * O campo app_metadata.role = 'admin' deve ser definido manualmente via
- * Supabase Dashboard ou SQL: update auth.users set raw_app_meta_data = ...
+ * Permissão de admin verificada via tabela `admin_users` (user_id uuid).
+ * Crie a tabela e insira seu UUID antes de usar as rotas protegidas:
+ *
+ *   create table admin_users (
+ *     user_id uuid primary key references auth.users(id) on delete cascade
+ *   );
+ *   insert into admin_users (user_id) values ('<seu-uuid-aqui>');
  */
 export async function conteudoRoutes(app: FastifyInstance) {
 
-  // ── Rota pública: cards ativos para o Dashboard ───────────
+  // ── Público: cards ativos para o Dashboard ───────────────
   app.get('/', async (_request, reply) => {
     const { data, error } = await supabase
       .from('conteudo')
@@ -28,13 +32,12 @@ export async function conteudoRoutes(app: FastifyInstance) {
     if (error) {
       return reply.status(500).send({ status: 'error', message: error.message })
     }
-
     return { status: 'ok', cards: data }
   })
 
-  // ── Rota admin: todos os cards (para gerenciamento) ───────
+  // ── Admin: todos os cards ──────────────────────────────
   app.get('/admin', { preHandler: authenticate }, async (request, reply) => {
-    requireAdmin(request, reply)
+    if (!(await isAdmin(request, reply))) return
 
     const { data, error } = await supabase
       .from('conteudo')
@@ -44,13 +47,12 @@ export async function conteudoRoutes(app: FastifyInstance) {
     if (error) {
       return reply.status(500).send({ status: 'error', message: error.message })
     }
-
     return { status: 'ok', cards: data }
   })
 
-  // ── Criar card ─────────────────────────────────────────────
+  // ── Criar card ──────────────────────────────────────────
   app.post('/', { preHandler: authenticate }, async (request, reply) => {
-    if (!requireAdmin(request, reply)) return
+    if (!(await isAdmin(request, reply))) return
 
     const body = request.body as {
       titulo: string
@@ -68,7 +70,6 @@ export async function conteudoRoutes(app: FastifyInstance) {
       })
     }
 
-    // Calcula ordem automaticamente se não fornecida
     let ordem = body.ordem
     if (ordem === undefined) {
       const { count } = await supabase
@@ -93,13 +94,12 @@ export async function conteudoRoutes(app: FastifyInstance) {
     if (error) {
       return reply.status(500).send({ status: 'error', message: error.message })
     }
-
     return reply.status(201).send({ status: 'ok', card: data })
   })
 
-  // ── Atualizar card ─────────────────────────────────────────
+  // ── Atualizar card ─────────────────────────────────────
   app.put('/:id', { preHandler: authenticate }, async (request, reply) => {
-    if (!requireAdmin(request, reply)) return
+    if (!(await isAdmin(request, reply))) return
 
     const { id } = request.params as { id: string }
     const body = request.body as Partial<{
@@ -136,16 +136,14 @@ export async function conteudoRoutes(app: FastifyInstance) {
         message: error.code === 'PGRST116' ? 'Card não encontrado' : error.message,
       })
     }
-
     return { status: 'ok', card: data }
   })
 
-  // ── Excluir card ───────────────────────────────────────────
+  // ── Excluir card ───────────────────────────────────────
   app.delete('/:id', { preHandler: authenticate }, async (request, reply) => {
-    if (!requireAdmin(request, reply)) return
+    if (!(await isAdmin(request, reply))) return
 
     const { id } = request.params as { id: string }
-
     const { error } = await supabase
       .from('conteudo')
       .delete()
@@ -154,17 +152,37 @@ export async function conteudoRoutes(app: FastifyInstance) {
     if (error) {
       return reply.status(500).send({ status: 'error', message: error.message })
     }
-
     return reply.status(204).send()
   })
 }
 
-// ── Helper: verifica role admin ────────────────────────────────
-function requireAdmin(request: Parameters<typeof authenticate>[0], reply: Parameters<typeof authenticate>[1]): boolean {
-  const user = (request as typeof request & { user?: { app_metadata?: { role?: string } } }).user
-  if (user?.app_metadata?.role !== 'admin') {
+// ── Helper: consulta tabela admin_users no banco ──────────────
+async function isAdmin(
+  request: FastifyRequest,
+  reply: FastifyReply
+): Promise<boolean> {
+  const user = (request as FastifyRequest & { user?: { id?: string } }).user
+
+  if (!user?.id) {
+    reply.status(401).send({ status: 'error', message: 'Usuário não autenticado' })
+    return false
+  }
+
+  const { data, error } = await supabase
+    .from('admin_users')
+    .select('user_id')
+    .eq('user_id', user.id)
+    .maybeSingle()
+
+  if (error) {
+    reply.status(500).send({ status: 'error', message: 'Erro ao verificar permissão' })
+    return false
+  }
+
+  if (!data) {
     reply.status(403).send({ status: 'error', message: 'Acesso restrito a administradores' })
     return false
   }
+
   return true
 }
