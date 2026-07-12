@@ -309,44 +309,4 @@ export async function authRoutes(app: FastifyInstance) {
       },
     }
   })
-
-  /**
-   * POST /auth/set-admin-password
-   * ROTA TEMPORÁRIA — redefine a senha do admin via service_role.
-   * Protegida pela chave ADMIN_SETUP_KEY nas env vars do Render.
-   * REMOVER após o setup inicial.
-   */
-  app.post('/set-admin-password', async (request, reply) => {
-    const { chave, email, nova_senha } = request.body as {
-      chave: string
-      email: string
-      nova_senha: string
-    }
-
-    const setupKey = process.env.ADMIN_SETUP_KEY
-    if (!setupKey || chave !== setupKey) {
-      return reply.status(403).send({ status: 'error', message: 'Chave inválida' })
-    }
-
-    // Busca o user_id pelo email
-    const { data: users, error: listError } = await supabase.auth.admin.listUsers()
-    if (listError) {
-      return reply.status(500).send({ status: 'error', message: listError.message })
-    }
-
-    const user = users.users.find(u => u.email === email)
-    if (!user) {
-      return reply.status(404).send({ status: 'error', message: 'Usuário não encontrado' })
-    }
-
-    const { error } = await supabase.auth.admin.updateUserById(user.id, {
-      password: nova_senha,
-    })
-
-    if (error) {
-      return reply.status(500).send({ status: 'error', message: error.message })
-    }
-
-    return { status: 'ok', message: 'Senha redefinida com sucesso' }
-  })
 }
