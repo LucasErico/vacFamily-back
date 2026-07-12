@@ -2,7 +2,7 @@
 
 > API REST para acompanhamento vacinal e gestão familiar
 
-[![Status](https://img.shields.io/badge/status-em%20desenvolvimento-yellow)](#)
+[![Status](https://img.shields.io/badge/status-funcional-brightgreen)](#)
 [![TCC](https://img.shields.io/badge/TCC-FAETERJ%202026-blue)](#)
 [![License](https://img.shields.io/badge/license-MIT-green)](#)
 
@@ -15,6 +15,8 @@ O **vacFamily** é um sistema de acompanhamento vacinal e gestão familiar desen
 Este repositório contém o **back-end** da aplicação: uma API REST responsável por toda a lógica de negócio, autenticação, validação de dados, comunicação com o banco de dados e processamento de sincronização offline.
 
 > O front-end está em: [vacFamily-front](https://github.com/LucasErico/vacFamily-front)
+
+**Deploy:** Render (free tier) — o servidor entra em sleep após 15 min de inatividade; a 1ª requisição pode levar até ~1 minuto (cold start). O front-end exibe um banner informativo durante esse período.
 
 ---
 
@@ -110,7 +112,7 @@ React + Vite          Node.js + Fastify      PostgreSQL (Supabase)
 |---|---|---|
 | GET | `/registros?membroId=` | Histórico vacinal do membro |
 | POST | `/registros` | Registra dose; gera lembrete de reforço automaticamente |
-| PUT | `/registros/:id` | Atualiza registro |
+| PUT | `/registros/:id` | Atualiza registro vacinal |
 | DELETE | `/registros/:id` | Remove registro |
 
 ### Lembretes (`/lembretes`) — rotas protegidas por JWT
@@ -119,7 +121,7 @@ React + Vite          Node.js + Fastify      PostgreSQL (Supabase)
 |---|---|---|
 | GET | `/lembretes` | Lista lembretes do usuário |
 | POST | `/lembretes` | Cria lembrete manual |
-| PUT | `/lembretes/:id` | Atualiza lembrete |
+| PUT | `/lembretes/:id` | Atualiza status (pendente / concluído / ignorado) |
 | DELETE | `/lembretes/:id` | Remove lembrete |
 
 ### Sincronização offline (`/sync`) — rota protegida por JWT
@@ -178,6 +180,7 @@ Tabela de referência, populada via seed. Não aceita inserções livres pelo us
 | `descricao` | TEXT | Breve descrição |
 | `fabricante` | TEXT | Opcional |
 | `doencas_previstas` | TEXT[] | Doenças que previne |
+| `faixa_etaria` | TEXT[] | Ciclos de vida (`crianca`, `adulto`, `idoso`…) |
 
 ### `regra_reforco`
 Define o esquema de doses e reforços para cada vacina.
@@ -186,7 +189,7 @@ Define o esquema de doses e reforços para cada vacina.
 |---|---|---|
 | `id` | UUID (PK) | — |
 | `vacina_id` | UUID (FK) | — |
-| `numero_dose` | INTEGER | Número da dose (1, 2, 3...) |
+| `numero_dose` | INTEGER | Número da dose (1, 2, 3…) |
 | `idade_minima_dias` | INTEGER | Idade mínima para aplicar (em dias) |
 | `intervalo_anterior_dias` | INTEGER | Intervalo desde a dose anterior |
 | `descricao` | TEXT | Ex: "Reforço anual" |
@@ -199,9 +202,9 @@ Define o esquema de doses e reforços para cada vacina.
 | `membro_familiar_id` | UUID (FK) | — |
 | `vacina_id` | UUID (FK) | — |
 | `data_aplicacao` | DATE | — |
-| `dose` | INTEGER | Número da dose aplicada |
+| `numero_dose` | INTEGER | Número da dose aplicada |
 | `local_aplicacao` | TEXT | Posto/clínica |
-| `observacoes` | TEXT | — |
+| `observacoes` | TEXT | Usado também para vacinas avulsas |
 | `version` | INTEGER | Controle de conflito offline |
 | `created_at` | TIMESTAMPTZ | — |
 | `updated_at` | TIMESTAMPTZ | — |
@@ -218,7 +221,10 @@ Suporta campanhas gerais (`membro_familiar_id = NULL`) e reforços específicos.
 | `data_prevista` | DATE | Data do próximo reforço |
 | `titulo` | TEXT | Ex: "Reforço da Febre Amarela" |
 | `descricao` | TEXT | — |
-| `concluido` | BOOLEAN | — |
+| `tipo` | TEXT | `reforco`, `campanha`, `manual` |
+| `status` | TEXT | `pendente`, `concluido`, `ignorado` |
+| `automatico` | BOOLEAN | Gerado pelo sistema ou pelo usuário |
+| `numero_dose` | INTEGER | Número da dose do reforço |
 | `version` | INTEGER | Controle de conflito offline |
 | `created_at` | TIMESTAMPTZ | — |
 | `updated_at` | TIMESTAMPTZ | — |
@@ -247,12 +253,6 @@ Estratégia híbrida: **versionamento por campo `version`** + **fila de operaç�
 | Usuário resolve o conflito | API aplica a escolha e incrementa `version` |
 
 Todos os registros editáveis possuem os campos: `created_at`, `updated_at`, `version`.
-
----
-
-## Observação sobre o free tier do Render
-
-O serviço entra em sleep após 15 minutos sem uso. A primeira requisição após o período de inatividade pode levar até ~1 minuto para responder. Comportamento esperado e aceitável no escopo acadêmico do projeto.
 
 ---
 
