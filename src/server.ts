@@ -9,21 +9,18 @@ import { vacinasRoutes } from './routes/vacinas'
 import { registrosRoutes } from './routes/registros'
 import { lembretesRoutes } from './routes/lembretes'
 import { conteudoRoutes } from './routes/conteudo'
+import { adminRoutes } from './routes/admin'
 
 async function bootstrap() {
   const app = Fastify({ logger: true })
 
-  // ── Plugins de segurança ────────────────────────────────
   await app.register(helmet)
 
-  // CORS: aceita lista de origens separadas por vírgula
-  // Ex.: FRONT_URL=https://vacfamily.vercel.app,https://vacfamily-git-main.vercel.app
   const rawOrigins = process.env.FRONT_URL ?? 'http://localhost:5173'
   const allowedOrigins = rawOrigins.split(',').map(o => o.trim()).filter(Boolean)
 
   await app.register(cors, {
     origin: (origin, cb) => {
-      // Requisições sem origin (curl, Postman, SSR) sempre passam
       if (!origin) return cb(null, true)
       if (allowedOrigins.some(o => origin === o || origin.endsWith('.vercel.app'))) {
         return cb(null, true)
@@ -33,19 +30,14 @@ async function bootstrap() {
     credentials: true,
   })
 
-  await app.register(rateLimit, {
-    max: 100,
-    timeWindow: '1 minute',
-  })
+  await app.register(rateLimit, { max: 100, timeWindow: '1 minute' })
 
-  // ── Health check ────────────────────────────────────
   app.get('/health', async () => ({
     status: 'ok',
     project: 'vacFamily-back',
     timestamp: new Date().toISOString(),
   }))
 
-  // ── Health check banco ──────────────────────────────
   app.get('/health/db', async (_, reply) => {
     try {
       const { data, error } = await supabase
@@ -77,18 +69,17 @@ async function bootstrap() {
     }
   })
 
-  // ── Rotas de negócio ────────────────────────────────────
   await app.register(authRoutes,      { prefix: '/auth' })
   await app.register(membrosRoutes,   { prefix: '/membros' })
   await app.register(vacinasRoutes,   { prefix: '/vacinas' })
   await app.register(registrosRoutes, { prefix: '/registros' })
   await app.register(lembretesRoutes, { prefix: '/lembretes' })
   await app.register(conteudoRoutes,  { prefix: '/conteudo' })
+  await app.register(adminRoutes,     { prefix: '/admin' })
 
-  // ── Start ─────────────────────────────────────────────
   const PORT = Number(process.env.PORT ?? 3000)
   await app.listen({ port: PORT, host: '0.0.0.0' })
-  console.log(`\nvacFamily-back rodando na porta ${PORT} \u2714`)
+  console.log(`\nvacFamily-back rodando na porta ${PORT} ✔`)
 }
 
 bootstrap().catch((err) => {
