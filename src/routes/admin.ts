@@ -2,12 +2,11 @@
  * Rotas do painel administrativo.
  *
  * GET    /admin/overview        — KPIs gerais
- * GET    /admin/usuarios        — lista todos os usuários (via tabela perfil)
+ * GET    /admin/usuarios        — lista usuários via tabela `usuario`
  * DELETE /admin/usuarios/:id    — remove usuário
  *
- * NOTA: supabase.auth.admin.listUsers() é instável no free tier do Supabase
- * (lança exceção não-serialízavel {}). Usamos a tabela `perfil` em vez disso.
- * Para o total de usuários no overview, contamos linhas da própria tabela `perfil`.
+ * IMPORTANTE: supabase.auth.admin.listUsers() lança exceção não-serialízavel
+ * no free tier do Render/Supabase. Usamos a tabela `usuario` (pública) em vez disso.
  */
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { supabase } from '../lib/supabase'
@@ -20,8 +19,8 @@ export async function adminRoutes(app: FastifyInstance) {
     if (!(await isAdmin(request, reply))) return
 
     try {
-      const [perfis, cardsAtivos, cardsTotais, vacinas, registros] = await Promise.all([
-        supabase.from('perfil').select('*', { count: 'exact', head: true }),
+      const [usuarios, cardsAtivos, cardsTotais, vacinas, registros] = await Promise.all([
+        supabase.from('usuario').select('*', { count: 'exact', head: true }),
         supabase.from('conteudo').select('*', { count: 'exact', head: true }).eq('ativo', true),
         supabase.from('conteudo').select('*', { count: 'exact', head: true }),
         supabase.from('vacina').select('*', { count: 'exact', head: true }),
@@ -31,11 +30,11 @@ export async function adminRoutes(app: FastifyInstance) {
       return {
         status: 'ok',
         overview: {
-          totalUsuarios:  perfis.count      ?? 0,
-          cardsAtivos:    cardsAtivos.count  ?? 0,
-          cardsTotais:    cardsTotais.count  ?? 0,
-          totalVacinas:   vacinas.count      ?? 0,
-          totalRegistros: registros.count    ?? 0,
+          totalUsuarios:  usuarios.count   ?? 0,
+          cardsAtivos:    cardsAtivos.count ?? 0,
+          cardsTotais:    cardsTotais.count ?? 0,
+          totalVacinas:   vacinas.count     ?? 0,
+          totalRegistros: registros.count   ?? 0,
         },
       }
     } catch (err: unknown) {
@@ -45,27 +44,23 @@ export async function adminRoutes(app: FastifyInstance) {
     }
   })
 
-  /**
-   * GET /admin/usuarios
-   * Lê os usuários da tabela `perfil` (acessível via service_role sem problemas).
-   * Enriquece com contagem de membros e flag de admin.
-   */
+  /** GET /admin/usuarios */
   app.get('/usuarios', { preHandler: authenticate }, async (request, reply) => {
     if (!(await isAdmin(request, reply))) return
 
     try {
-      // 1. Busca perfis — tabela pública, service_role acessa sem restrição
-      const { data: perfis, error: perfisError } = await supabase
-        .from('perfil')
-        .select('id, email, nome, criado_em')
+      // 1. Busca usuários da tabela pública `usuario`
+      const { data: usuarios, error: usuariosError } = await supabase
+        .from('usuario')
+        .select('*')
         .order('criado_em', { ascending: false })
 
-      if (perfisError) {
-        request.log.error({ perfisError }, 'perfil query error')
-        return reply.status(500).send({ status: 'error', message: perfisError.message })
+      if (usuariosError) {
+        request.log.error({ usuariosError }, 'usuario query error')
+        return reply.status(500).send({ status: 'error', message: usuariosError.message })
       }
 
-      const ids = (perfis ?? []).map(p => p.id)
+      const ids = (usuarios ?? []).map((u: Record<string, unknown>) => u.id as string)
 
       // 2. Contagem de membros por usuário
       const { data: membros } = await supabase
@@ -74,8 +69,9 @@ export async function adminRoutes(app: FastifyInstance) {
         .in('usuario_id', ids.length > 0 ? ids : ['00000000-0000-0000-0000-000000000000'])
 
       const contagemMembros: Record<string, number> = {}
-      membros?.forEach(m => {
-        contagemMembros[m.usuario_id] = (contagemMembros[m.usuario_id] ?? 0) + 1
+      membros?.forEach((m: Record<string, unknown>) => {
+        const uid = m.usuario_id as string
+        contagemMembros[uid] = (contagemMembros[uid] ?? 0) + 1
       })
 
       // 3. IDs de admins
@@ -83,18 +79,18 @@ export async function adminRoutes(app: FastifyInstance) {
         .from('admin_users')
         .select('user_id')
 
-      const adminIds = new Set(adminRows?.map(a => a.user_id) ?? [])
+      const adminIds = new Set(adminRows?.map((a: Record<string, unknown>) => a.user_id as string) ?? [])
 
-      const usuarios = (perfis ?? []).map(p => ({
-        id:       p.id,
-        email:    p.email   ?? '',
-        nome:     p.nome    ?? '',
-        membros:  contagemMembros[p.id] ?? 0,
-        criadoEm: p.criado_em,
-        admin:    adminIds.has(p.id),
+      const resultado = (usuarios ?? []).map((u: Record<string, unknown>) => ({
+        id:       u.id       as string,
+        email:    (u.email   as string | null) ?? '',
+        nome:     (u.nome    as string | null) ?? '',
+        membros:  contagemMembros[u.id as string] ?? 0,
+        criadoEm: u.criado_em as string,
+        admin:    adminIds.has(u.id as string),
       }))
 
-      return { status: 'ok', usuarios }
+      return { status: 'ok', usuarios: resultado }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       request.log.error({ err }, 'admin/usuarios error')
@@ -102,11 +98,7 @@ export async function adminRoutes(app: FastifyInstance) {
     }
   })
 
-  /**
-   * DELETE /admin/usuarios/:id
-   * Remove o usuário via auth.admin.deleteUser.
-   * Se falhar (free tier), tenta soft-delete limpando a tabela perfil.
-   */
+  /** DELETE /admin/usuarios/:id */
   app.delete('/usuarios/:id', { preHandler: authenticate }, async (request, reply) => {
     if (!(await isAdmin(request, reply))) return
 
@@ -122,16 +114,13 @@ export async function adminRoutes(app: FastifyInstance) {
 
     try {
       // Tenta remoção via Auth Admin API
-      const { error } = await supabase.auth.admin.deleteUser(id)
-      if (error) {
-        request.log.error({ error }, 'deleteUser auth error')
-        // Fallback: remove apenas da tabela perfil (o usuário perde acesso mas não é apagado do Auth)
-        const { error: perfilError } = await supabase
-          .from('perfil')
-          .delete()
-          .eq('id', id)
-        if (perfilError) {
-          return reply.status(500).send({ status: 'error', message: perfilError.message })
+      const { error: authError } = await supabase.auth.admin.deleteUser(id)
+      if (authError) {
+        // Fallback: remove da tabela usuario (perde acesso mas não apaga do Auth)
+        request.log.error({ authError }, 'deleteUser auth error — usando fallback')
+        const { error: tblError } = await supabase.from('usuario').delete().eq('id', id)
+        if (tblError) {
+          return reply.status(500).send({ status: 'error', message: tblError.message })
         }
       }
       return reply.status(204).send()
@@ -143,7 +132,7 @@ export async function adminRoutes(app: FastifyInstance) {
   })
 }
 
-// ── Helper: verifica se o usuário autenticado é admin ──────────
+// ── Helper ───────────────────────────────────────────────────
 async function isAdmin(request: FastifyRequest, reply: FastifyReply): Promise<boolean> {
   const user = (request as FastifyRequest & { user?: { id?: string } }).user
   if (!user?.id) {
