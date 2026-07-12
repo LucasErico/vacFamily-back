@@ -3,16 +3,38 @@
  *
  * GET    /admin/overview        — KPIs gerais
  * GET    /admin/usuarios        — lista usuários via tabela `usuario`
+ * GET    /admin/schema-debug    — inspeciona colunas reais (remover em prod)
  * DELETE /admin/usuarios/:id    — remove usuário
- *
- * IMPORTANTE: supabase.auth.admin.listUsers() lança exceção não-serialízavel
- * no free tier do Render/Supabase. Usamos a tabela `usuario` (pública) em vez disso.
  */
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { supabase } from '../lib/supabase'
 import { authenticate } from '../middlewares/authenticate'
 
 export async function adminRoutes(app: FastifyInstance) {
+
+  /**
+   * GET /admin/schema-debug
+   * Retorna uma linha de cada tabela relevante para inspecionar nomes de colunas.
+   * REMOVER após diagnosticar.
+   */
+  app.get('/schema-debug', { preHandler: authenticate }, async (request, reply) => {
+    if (!(await isAdmin(request, reply))) return
+
+    const [u, m, a] = await Promise.all([
+      supabase.from('usuario').select('*').limit(1),
+      supabase.from('membro_familiar').select('*').limit(1),
+      supabase.from('admin_users').select('*').limit(1),
+    ])
+
+    return {
+      status: 'ok',
+      schemas: {
+        usuario:         { columns: u.data?.[0] ? Object.keys(u.data[0]) : [], sample: u.data?.[0] ?? null, error: u.error?.message },
+        membro_familiar: { columns: m.data?.[0] ? Object.keys(m.data[0]) : [], sample: m.data?.[0] ?? null, error: m.error?.message },
+        admin_users:     { columns: a.data?.[0] ? Object.keys(a.data[0]) : [], sample: a.data?.[0] ?? null, error: a.error?.message },
+      },
+    }
+  })
 
   /** GET /admin/overview */
   app.get('/overview', { preHandler: authenticate }, async (request, reply) => {
@@ -49,22 +71,23 @@ export async function adminRoutes(app: FastifyInstance) {
     if (!(await isAdmin(request, reply))) return
 
     try {
-      // 1. Busca usuários da tabela pública `usuario`
+      // Busca todos os campos — usamos created_at (padrão Supabase)
       const { data: usuarios, error: usuariosError } = await supabase
         .from('usuario')
         .select('*')
-        .order('criado_em', { ascending: false })
+        .order('created_at', { ascending: false })
 
       if (usuariosError) {
         request.log.error({ usuariosError }, 'usuario query error')
         return reply.status(500).send({ status: 'error', message: usuariosError.message })
       }
 
-      const ids = (usuarios ?? []).map((u: Record<string, unknown>) => u.id as string)
+      const rows = usuarios ?? []
+      const ids = rows.map((u: Record<string, unknown>) => u.id as string)
 
-      // 2. Contagem de membros por usuário
+      // Contagem de membros por usuário
       const { data: membros } = await supabase
-        .from('membro')
+        .from('membro_familiar')
         .select('usuario_id')
         .in('usuario_id', ids.length > 0 ? ids : ['00000000-0000-0000-0000-000000000000'])
 
@@ -74,19 +97,21 @@ export async function adminRoutes(app: FastifyInstance) {
         contagemMembros[uid] = (contagemMembros[uid] ?? 0) + 1
       })
 
-      // 3. IDs de admins
+      // IDs de admins
       const { data: adminRows } = await supabase
         .from('admin_users')
         .select('user_id')
 
       const adminIds = new Set(adminRows?.map((a: Record<string, unknown>) => a.user_id as string) ?? [])
 
-      const resultado = (usuarios ?? []).map((u: Record<string, unknown>) => ({
-        id:       u.id       as string,
-        email:    (u.email   as string | null) ?? '',
-        nome:     (u.nome    as string | null) ?? '',
-        membros:  contagemMembros[u.id as string] ?? 0,
-        criadoEm: u.criado_em as string,
+      // Monta resposta usando os campos que existem na linha real
+      // (schema-debug mostra os nomes exatos)
+      const resultado = rows.map((u: Record<string, unknown>) => ({
+        id:       u.id                              as string,
+        email:    (u.email    ?? '')                as string,
+        nome:     (u.nome     ?? u.name ?? '')      as string,
+        membros:  contagemMembros[u.id as string]   ?? 0,
+        criadoEm: (u.created_at ?? u.criado_em ?? '') as string,
         admin:    adminIds.has(u.id as string),
       }))
 
@@ -113,10 +138,8 @@ export async function adminRoutes(app: FastifyInstance) {
     }
 
     try {
-      // Tenta remoção via Auth Admin API
       const { error: authError } = await supabase.auth.admin.deleteUser(id)
       if (authError) {
-        // Fallback: remove da tabela usuario (perde acesso mas não apaga do Auth)
         request.log.error({ authError }, 'deleteUser auth error — usando fallback')
         const { error: tblError } = await supabase.from('usuario').delete().eq('id', id)
         if (tblError) {
